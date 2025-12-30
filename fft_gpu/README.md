@@ -11,7 +11,12 @@ A high-performance application demonstrating real-time 2D FFT, Sobel edge detect
 
 ## Usage
 
-### Run on GPU (Default)
+### Run from Workspace Root
+```bash
+cargo run -p fft_gpu --release
+```
+
+### Run from this directory
 ```bash
 cargo run --release
 ```
