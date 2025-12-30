@@ -1,35 +1,9 @@
 use cubecl::{cube, prelude::*};
-use burn::tensor::{backend::Backend, ops::{FloatTensor, IntTensor}, TensorPrimitive};
+use burn::tensor::{backend::Backend, ops::FloatTensor, TensorPrimitive};
 use burn::tensor::Tensor as BurnTensor;
 use burn_cubecl::{CubeBackend, CubeRuntime, FloatElement, IntElement, BoolElement, tensor::CubeTensor, kernel::into_contiguous};
-
-#[cube(launch)]
-pub fn pack_rgb_kernel<F: Float, I: Int>(
-    r: &Tensor<F>,
-    g: &Tensor<F>,
-    b: &Tensor<F>,
-    output: &mut Tensor<I>,
-    num_elems: u32,
-) {
-    let idx = ABSOLUTE_POS;
-    if idx < num_elems {
-        let r_val = r[idx];
-        let g_val = g[idx];
-        let b_val = b[idx];
-        
-        // Clamp and scale
-        let r_clamped = F::clamp(r_val, F::new(0.0), F::new(1.0));
-        let g_clamped = F::clamp(g_val, F::new(0.0), F::new(1.0));
-        let b_clamped = F::clamp(b_val, F::new(0.0), F::new(1.0));
-        
-        let r_int = u32::cast_from(r_clamped * F::new(255.0));
-        let g_int = u32::cast_from(g_clamped * F::new(255.0));
-        let b_int = u32::cast_from(b_clamped * F::new(255.0));
-        
-        let packed = (r_int << 16) | (g_int << 8) | b_int;
-        output[idx] = I::cast_from(packed);
-    }
-}
+use burn_ndarray::{NdArray, NdArrayTensor};
+use rayon::prelude::*;
 
 #[cube(launch)]
 pub fn sobel_kernel<F: Float>(
@@ -86,61 +60,43 @@ pub fn sobel_kernel<F: Float>(
     }
 }
 
+#[cube(launch)]
+pub fn temporal_diff_kernel<F: Float>(
+    current: &Tensor<F>,
+    prev: &Tensor<F>,
+    prev_prev: &Tensor<F>,
+    output: &mut Tensor<F>,
+) {
+    let idx = ABSOLUTE_POS;
+    
+    if idx < output.len() {
+        let c = current[idx];
+        let p = prev[idx];
+        let pp = prev_prev[idx];
+        
+        // Motion Energy: |Current - Prev| + |Prev - PrevPrev|
+        let diff1 = F::abs(c - p);
+        let diff2 = F::abs(p - pp);
+        
+        output[idx] = diff1 + diff2;
+    }
+}
+
 pub trait OpsBackend: Backend {
     fn sobel_impl(
         input: FloatTensor<Self>,
         height: usize,
         width: usize,
     ) -> FloatTensor<Self>;
-
-    fn pack_rgb_impl(
-        r: FloatTensor<Self>,
-        g: FloatTensor<Self>,
-        b: FloatTensor<Self>,
-    ) -> IntTensor<Self>;
+    
+    fn temporal_diff_impl(
+        current: FloatTensor<Self>,
+        prev: FloatTensor<Self>,
+        prev_prev: FloatTensor<Self>,
+    ) -> FloatTensor<Self>;
 }
 
 impl<R: CubeRuntime, F: FloatElement, I: IntElement, BT: BoolElement> OpsBackend for CubeBackend<R, F, I, BT> {
-    fn pack_rgb_impl(
-        r: FloatTensor<Self>,
-        g: FloatTensor<Self>,
-        b: FloatTensor<Self>,
-    ) -> IntTensor<Self> {
-        let r = into_contiguous(r);
-        let g = into_contiguous(g);
-        let b = into_contiguous(b);
-        
-        let num_elems = r.shape.num_elements();
-        let size_bytes = num_elems * core::mem::size_of::<I>();
-        
-        let output_handle = r.client.empty(size_bytes);
-        
-        let output_tensor = CubeTensor::new(
-            r.client.clone(),
-            output_handle,
-            r.shape.clone(),
-            r.device.clone(),
-            r.strides.clone(),
-            I::dtype(),
-        );
-        
-        let cube_dim = CubeDim::new_1d(256);
-        let cube_count = CubeCount::Static((num_elems as u32 + cube_dim.x - 1) / cube_dim.x, 1, 1);
-        
-        pack_rgb_kernel::launch::<F, I, R>(
-            &r.client,
-            cube_count,
-            cube_dim,
-            r.as_tensor_arg(1),
-            g.as_tensor_arg(1),
-            b.as_tensor_arg(1),
-            output_tensor.as_tensor_arg(1),
-            ScalarArg::new(num_elems as u32),
-        ).unwrap();
-        
-        output_tensor
-    }
-
     fn sobel_impl(
         input: FloatTensor<Self>,
         height: usize,
@@ -176,6 +132,45 @@ impl<R: CubeRuntime, F: FloatElement, I: IntElement, BT: BoolElement> OpsBackend
         
         output_tensor
     }
+    
+    fn temporal_diff_impl(
+        current: FloatTensor<Self>,
+        prev: FloatTensor<Self>,
+        prev_prev: FloatTensor<Self>,
+    ) -> FloatTensor<Self> {
+        let current = into_contiguous(current);
+        let prev = into_contiguous(prev);
+        let prev_prev = into_contiguous(prev_prev);
+        
+        let num_elems = current.shape.num_elements();
+        let size_bytes = num_elems * core::mem::size_of::<F>();
+        
+        let output_handle = current.client.empty(size_bytes);
+        
+        let output_tensor = CubeTensor::new(
+            current.client.clone(),
+            output_handle,
+            current.shape.clone(),
+            current.device.clone(),
+            current.strides.clone(),
+            F::dtype(),
+        );
+        
+        let cube_dim = CubeDim::new_1d(256);
+        let cube_count = CubeCount::Static((num_elems as u32 + cube_dim.x - 1) / cube_dim.x, 1, 1);
+        
+        temporal_diff_kernel::launch::<F, R>(
+            &current.client,
+            cube_count,
+            cube_dim,
+            current.as_tensor_arg(1),
+            prev.as_tensor_arg(1),
+            prev_prev.as_tensor_arg(1),
+            output_tensor.as_tensor_arg(1),
+        ).unwrap();
+        
+        output_tensor
+    }
 }
 
 pub fn compute_sobel<B: Backend + OpsBackend>(input: BurnTensor<B, 2>) -> BurnTensor<B, 2> {
@@ -194,20 +189,100 @@ pub fn compute_sobel<B: Backend + OpsBackend>(input: BurnTensor<B, 2>) -> BurnTe
     BurnTensor::from_primitive(TensorPrimitive::Float(out_t))
 }
 
-pub fn pack_rgb<B: Backend + OpsBackend>(
-    r: BurnTensor<B, 2>,
-    g: BurnTensor<B, 2>,
-    b: BurnTensor<B, 2>,
-) -> BurnTensor<B, 2, burn::tensor::Int> {
-    let r_prim = r.into_primitive();
-    let g_prim = g.into_primitive();
-    let b_prim = b.into_primitive();
+pub fn compute_temporal_diff<B: Backend + OpsBackend>(
+    current: BurnTensor<B, 2>,
+    prev: BurnTensor<B, 2>,
+    prev_prev: BurnTensor<B, 2>,
+) -> BurnTensor<B, 2> {
+    let current_prim = current.into_primitive();
+    let prev_prim = prev.into_primitive();
+    let prev_prev_prim = prev_prev.into_primitive();
     
-    let r_t = match r_prim { TensorPrimitive::Float(t) => t, _ => panic!("Expected float tensor") };
-    let g_t = match g_prim { TensorPrimitive::Float(t) => t, _ => panic!("Expected float tensor") };
-    let b_t = match b_prim { TensorPrimitive::Float(t) => t, _ => panic!("Expected float tensor") };
+    let current_t = match current_prim { TensorPrimitive::Float(t) => t, _ => panic!("Expected float tensor") };
+    let prev_t = match prev_prim { TensorPrimitive::Float(t) => t, _ => panic!("Expected float tensor") };
+    let prev_prev_t = match prev_prev_prim { TensorPrimitive::Float(t) => t, _ => panic!("Expected float tensor") };
     
-    let out_t = B::pack_rgb_impl(r_t, g_t, b_t);
+    let out_t = B::temporal_diff_impl(current_t, prev_t, prev_prev_t);
     
-    BurnTensor::from_primitive(out_t)
+    BurnTensor::from_primitive(TensorPrimitive::Float(out_t))
 }
+
+impl OpsBackend for NdArray<f32> {
+    fn sobel_impl(
+        input: FloatTensor<Self>,
+        height: usize,
+        width: usize,
+    ) -> FloatTensor<Self> {
+        let input_arc = match input {
+            NdArrayTensor::F32(storage) => storage.into_owned(),
+            _ => panic!("Expected F32 tensor"),
+        };
+        
+        let mut output_array = ndarray::Array2::<f32>::zeros((height, width));
+        
+        let input_slice = input_arc.as_slice().expect("Sobel input must be contiguous");
+        let out_slice = output_array.as_slice_mut().unwrap();
+        
+        out_slice.par_chunks_mut(width).enumerate().for_each(|(y, row_out)| {
+            if y == 0 || y >= height - 1 {
+                return;
+            }
+            
+            // Direct slice access to avoid ndarray overhead
+            let prev_row = &input_slice[(y - 1) * width .. y * width];
+            let curr_row = &input_slice[y * width .. (y + 1) * width];
+            let next_row = &input_slice[(y + 1) * width .. (y + 2) * width];
+            
+            for x in 1..width-1 {
+                let tl = prev_row[x-1];
+                let t  = prev_row[x];
+                let tr = prev_row[x+1];
+                
+                let l  = curr_row[x-1];
+                let r  = curr_row[x+1];
+                
+                let bl = next_row[x-1];
+                let b  = next_row[x];
+                let br = next_row[x+1];
+                
+                let gx = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
+                let gy = (bl + 2.0 * b + br) - (tl + 2.0 * t + tr);
+                
+                row_out[x] = (gx * gx + gy * gy).sqrt();
+            }
+        });
+        
+        NdArrayTensor::from(output_array.into_dyn().into_shared())
+    }
+    
+    fn temporal_diff_impl(
+        current: FloatTensor<Self>,
+        prev: FloatTensor<Self>,
+        prev_prev: FloatTensor<Self>,
+    ) -> FloatTensor<Self> {
+        let c_arc = match current { NdArrayTensor::F32(s) => s.into_owned(), _ => panic!() };
+        let p_arc = match prev { NdArrayTensor::F32(s) => s.into_owned(), _ => panic!() };
+        let pp_arc = match prev_prev { NdArrayTensor::F32(s) => s.into_owned(), _ => panic!() };
+        
+        let mut out_arr = ndarray::ArrayD::<f32>::zeros(c_arc.shape());
+        
+        let c_slice = c_arc.as_slice().unwrap();
+        let p_slice = p_arc.as_slice().unwrap();
+        let pp_slice = pp_arc.as_slice().unwrap();
+        let out_slice = out_arr.as_slice_mut().unwrap();
+        
+        out_slice.par_iter_mut()
+            .zip(c_slice.par_iter())
+            .zip(p_slice.par_iter())
+            .zip(pp_slice.par_iter())
+            .for_each(|(((o, c), p), pp)| {
+                let diff1 = (c - p).abs();
+                let diff2 = (p - pp).abs();
+                *o = diff1 + diff2;
+            });
+            
+        NdArrayTensor::from(out_arr.into_shared())
+    }
+}
+
+

@@ -1,26 +1,27 @@
-# Rust Burn FFT GPU App
+# Real-time 2D FFT & Computer Vision with Rust Burn
 
-This application demonstrates how to perform FFT on GPU using the Burn library.
+A high-performance application demonstrating real-time 2D FFT, Sobel edge detection, and temporal difference analysis on camera input.
 
-## Prerequisites
+## Features
+- **Dual Backend Support**:
+  - **GPU**: Custom CubeCL kernels for 2D FFT and image processing.
+  - **CPU**: Optimized pipeline using `burn-ndarray`, `rayon` (parallel processing), and `rustfft`.
+- **Real-time Visualization**: Displays Input, FFT Magnitude, Sobel Edges, and Motion Energy side-by-side.
+- **Camera Support**: Uses `nokhwa` for cross-platform video capture.
 
-- Rust installed
-- GPU with Vulkan, Metal, or DX12 support (or CUDA if configured)
-- Burn library (local dependency)
+## Usage
 
-## Running
-
+### Run on GPU (Default)
 ```bash
 cargo run --release
 ```
 
-## Structure
+### Run on CPU (Optimized)
+```bash
+cargo run --release -- --on_cpu
+```
 
-- `src/main.rs`: Entry point, sets up backend and data.
-- `src/fft_kernel.rs`: Contains the FFT implementation logic (Radix-2 Cooley-Tukey).
-
-## Status
-
-- Basic structure implemented.
-- Bit-reversal permutation implemented.
-- Butterfly stages are currently placeholders.
+### Generate Test Video
+```bash
+cargo run --release -- --generate-video > output.raw
+```

@@ -1,6 +1,10 @@
 use cubecl::{cube, prelude::*};
 use burn::tensor::{backend::Backend, ops::FloatTensor};
 use burn_cubecl::{CubeBackend, CubeRuntime, FloatElement, IntElement, BoolElement, kernel::into_contiguous};
+use burn_ndarray::{NdArray, NdArrayTensor};
+use rustfft::{FftPlanner, num_complex::Complex};
+use rustfft::num_traits::Zero;
+use rayon::prelude::*;
 
 #[cube]
 fn reverse_bits(n: u32, bits: u32) -> u32 {
@@ -155,3 +159,77 @@ impl<R: CubeRuntime, F: FloatElement, I: IntElement, BT: BoolElement> FftBackend
         (real, imag)
     }
 }
+
+impl FftBackend for NdArray<f32> {
+    fn fft_1d_batch_impl(
+        real: FloatTensor<Self>,
+        imag: FloatTensor<Self>,
+        n_fft: usize,
+    ) -> (FloatTensor<Self>, FloatTensor<Self>) {
+        let mut real_arc = match real {
+            NdArrayTensor::F32(storage) => storage.into_owned(),
+            _ => panic!("Expected F32 tensor"),
+        };
+        let mut imag_arc = match imag {
+            NdArrayTensor::F32(storage) => storage.into_owned(),
+            _ => panic!("Expected F32 tensor"),
+        };
+        
+        let mut real_array = real_arc.into_owned();
+        let mut imag_array = imag_arc.into_owned();
+        
+        let shape = real_array.shape().to_vec();
+        let last_dim = shape.len() - 1;
+        assert_eq!(shape[last_dim], n_fft);
+        
+        // Ensure contiguous
+        if !real_array.is_standard_layout() {
+            real_array = real_array.as_standard_layout().into_owned();
+        }
+        if !imag_array.is_standard_layout() {
+            imag_array = imag_array.as_standard_layout().into_owned();
+        }
+        
+        let r_slice = real_array.as_slice_mut().expect("FFT input must be contiguous");
+        let i_slice = imag_array.as_slice_mut().expect("FFT input must be contiguous");
+        
+        // 1. Create Plan ONCE (Arc<dyn Fft> is Send+Sync)
+        let mut planner = FftPlanner::new();
+        let fft = planner.plan_fft_forward(n_fft);
+        let scratch_len = fft.get_inplace_scratch_len();
+
+        // 2. Use for_each_init to reuse buffers per thread
+        r_slice.par_chunks_mut(n_fft)
+            .zip(i_slice.par_chunks_mut(n_fft))
+            .for_each_init(
+                || {
+                    // Thread-local allocations
+                    (
+                        vec![Complex::zero(); scratch_len], 
+                        vec![Complex::zero(); n_fft]
+                    )
+                },
+                |(scratch, buffer), (r_chunk, i_chunk)| {
+                    // Copy to Complex buffer
+                    for (j, (r, i)) in r_chunk.iter().zip(i_chunk.iter()).enumerate() {
+                        buffer[j] = Complex::new(*r, *i);
+                    }
+                    
+                    // Process with reused scratch buffer
+                    fft.process_with_scratch(buffer, scratch);
+                    
+                    // Copy back
+                    for (j, val) in buffer.iter().enumerate() {
+                        r_chunk[j] = val.re;
+                        i_chunk[j] = val.im;
+                    }
+                }
+            );
+            
+        (
+            NdArrayTensor::from(real_array.into_shared()),
+            NdArrayTensor::from(imag_array.into_shared())
+        )
+    }
+}
+

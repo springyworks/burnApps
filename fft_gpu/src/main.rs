@@ -2,43 +2,94 @@ mod fft_kernel;
 mod cube_fft;
 mod cube_ops;
 
-use burn::tensor::{Tensor, backend::Backend, TensorPrimitive};
+use burn::tensor::{Tensor, backend::Backend};
 use burn::backend::wgpu::WgpuRuntime;
 use burn_cubecl::CubeBackend;
 use cube_fft::FftBackend;
-use cube_ops::{OpsBackend, compute_sobel, pack_rgb};
+use cube_ops::{compute_sobel, compute_temporal_diff, OpsBackend};
 use std::io::Write;
 use nokhwa::{Camera, utils::{RequestedFormat, RequestedFormatType}, pixel_format::RgbFormat};
 use minifb::{Window, WindowOptions, Key, ScaleMode};
+use rayon::prelude::*;
 
 // Type alias for our backend
 type MyBackend = CubeBackend<WgpuRuntime, f32, i32, u32>;
+type CpuBackend = burn_ndarray::NdArray<f32>;
+
+struct GpuRingBuffer<B: Backend> {
+    frames: Vec<Tensor<B, 2>>,
+    capacity: usize,
+}
+
+impl<B: Backend> GpuRingBuffer<B> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            frames: Vec::with_capacity(capacity),
+            capacity,
+        }
+    }
+    
+    fn push(&mut self, frame: Tensor<B, 2>) {
+        if self.frames.len() >= self.capacity {
+            self.frames.remove(0);
+        }
+        self.frames.push(frame);
+    }
+    
+    fn get(&self, index: usize) -> Option<Tensor<B, 2>> {
+        if index < self.frames.len() {
+            // Index 0 is oldest, len-1 is newest
+            // We want get(0) to be newest (current), get(1) to be prev
+            let real_idx = self.frames.len() - 1 - index;
+            Some(self.frames[real_idx].clone())
+        } else {
+            None
+        }
+    }
+    
+    fn is_full(&self) -> bool {
+        self.frames.len() == self.capacity
+    }
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let generate_video = args.contains(&"--generate-video".to_string());
+    let on_cpu = args.contains(&"--on_cpu".to_string());
 
-    let device = burn::backend::wgpu::WgpuDevice::default();
-    println!("Initializing 2D FFT on GPU: {:?}", device);
-
-    if generate_video {
-        run_video_generation(&device);
+    if on_cpu {
+        println!("Running on CPU (NdArray + Rayon + RustFFT)");
+        rayon::ThreadPoolBuilder::new().num_threads(10).build_global().unwrap();
+        let device = burn_ndarray::NdArrayDevice::Cpu;
+        
+        if generate_video {
+            run_video_generation::<CpuBackend>(&device);
+        } else {
+            run_realtime_camera::<CpuBackend>(&device);
+        }
     } else {
-        run_realtime_camera(&device);
+        let device = burn::backend::wgpu::WgpuDevice::default();
+        println!("Initializing 2D FFT on GPU: {:?}", device);
+
+        if generate_video {
+            run_video_generation::<MyBackend>(&device);
+        } else {
+            run_realtime_camera::<MyBackend>(&device);
+        }
     }
 }
 
-fn run_realtime_camera(device: &burn::backend::wgpu::WgpuDevice) {
+fn run_realtime_camera<B: Backend + FftBackend + OpsBackend>(device: &B::Device) {
     println!("Starting Realtime Camera Mode...");
     
     // 2. Setup Window
-    let width = 256;
-    let height = 256;
-    let window_width = width * 3; // Input, FFT, Sobel
+    let width = 1024;
+    let height = 1024;
+    let window_width = width * 4; // Input, FFT, Sobel, Temporal
     let window_height = height;
     
     let mut window = Window::new(
-        "Realtime 2D FFT & Sobel - Burn GPU",
+        "Realtime 2D FFT & Sobel & Temporal - Burn",
         window_width,
         window_height,
         WindowOptions {
@@ -53,9 +104,8 @@ fn run_realtime_camera(device: &burn::backend::wgpu::WgpuDevice) {
     window.limit_update_rate(Some(std::time::Duration::from_micros(16600))); // ~60 FPS
     let mut buffer: Vec<u32> = vec![0; window_width * window_height];
 
-    // Cyclic Buffer (Size 3)
-    let mut ring_buffer: Vec<Tensor<MyBackend, 2>> = Vec::with_capacity(3);
-    let mut ring_idx = 0;
+    // Cyclic Buffer for Temporal Processing (Size 3)
+    let mut ring_buffer = GpuRingBuffer::<B>::new(3);
 
     // 1. Setup Camera with Retry Loop
     let index = nokhwa::utils::CameraIndex::Index(0);
@@ -122,54 +172,43 @@ fn run_realtime_camera(device: &burn::backend::wgpu::WgpuDevice) {
                 }
             };
             
-            // Resize/Crop to 256x256 for FFT
-            let resized = image::imageops::resize(&decoded, width as u32, height as u32, image::imageops::FilterType::Nearest);
+            // Resize/Crop to 1024x1024 for FFT
+            let resized = image::imageops::resize(&decoded, width as u32, height as u32, image::imageops::FilterType::Triangle);
             
             // Convert to Tensor Input (Grayscale for FFT)
-            let mut input_floats = Vec::with_capacity(width * height);
-            for pixel in resized.pixels() {
-                let r = pixel[0] as f32;
-                let g = pixel[1] as f32;
-                let b = pixel[2] as f32;
-                let gray = 0.299 * r + 0.587 * g + 0.114 * b;
-                input_floats.push(gray / 255.0);
-            }
+            let input_floats: Vec<f32> = resized.as_raw()
+                .par_chunks(3)
+                .map(|pixel| {
+                    let r = pixel[0] as f32;
+                    let g = pixel[1] as f32;
+                    let b = pixel[2] as f32;
+                    let gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                    (gray / 255.0).clamp(0.0, 1.0)
+                })
+                .collect();
             
-            // Upload to GPU
-            let tensor = Tensor::<MyBackend, 1>::from_floats(input_floats.as_slice(), device);
+            // Upload to Device
+            let tensor = Tensor::<B, 1>::from_floats(input_floats.as_slice(), device);
             let tensor_2d = tensor.reshape([height, width]);
             
-            // Update Ring Buffer
-            if ring_buffer.len() < 3 {
-                ring_buffer.push(tensor_2d.clone());
-            } else {
-                ring_buffer[ring_idx] = tensor_2d.clone();
-                ring_idx = (ring_idx + 1) % 3;
-            }
-            
-            // Get frames for RGB Split (Current, Prev, PrevPrev)
-            // If buffer not full, use current for all
-            let (r_frame, g_frame, b_frame) = if ring_buffer.len() < 3 {
-                (tensor_2d.clone(), tensor_2d.clone(), tensor_2d.clone())
-            } else {
-                // ring_idx points to the *oldest* frame (next to be overwritten), 
-                // so (ring_idx - 1) is the newest.
-                // We want: R=Newest, G=Prev, B=Oldest
-                let idx_0 = (ring_idx + 2) % 3; // Newest (Current)
-                let idx_1 = (ring_idx + 1) % 3; // Previous
-                let idx_2 = ring_idx;           // Oldest
-                
-                (ring_buffer[idx_0].clone(), ring_buffer[idx_1].clone(), ring_buffer[idx_2].clone())
-            };
-            
-            // Perform RGB Temporal Pack (GPU)
-            let rgb_packed = pack_rgb(r_frame, g_frame, b_frame);
+            // Push to Ring Buffer
+            ring_buffer.push(tensor_2d.clone());
             
             // Perform 2D FFT
             let fft_result = compute_fft_2d(tensor_2d.clone());
             
             // Perform Sobel Edge Detection
-            let sobel_result = compute_sobel(tensor_2d);
+            let sobel_result = compute_sobel(tensor_2d.clone());
+            
+            // Perform Temporal Difference (if we have enough frames)
+            let temporal_result = if ring_buffer.is_full() {
+                let current = ring_buffer.get(0).unwrap();
+                let prev = ring_buffer.get(1).unwrap();
+                let prev_prev = ring_buffer.get(2).unwrap();
+                compute_temporal_diff(current, prev, prev_prev)
+            } else {
+                Tensor::zeros_like(&tensor_2d)
+            };
             
             // Download Results
             let fft_data = fft_result.to_data();
@@ -178,38 +217,32 @@ fn run_realtime_camera(device: &burn::backend::wgpu::WgpuDevice) {
             let sobel_data = sobel_result.to_data();
             let sobel_vals = sobel_data.as_slice::<f32>().unwrap();
             
-            let rgb_data = rgb_packed.to_data();
-            let rgb_vals = rgb_data.as_slice::<i32>().unwrap();
+            let temporal_data = temporal_result.to_data();
+            let temporal_vals = temporal_data.as_slice::<f32>().unwrap();
             
             // Visualization
             // Find max magnitude for normalization
-            let mut max_mag = 0.0f32;
-            let mut magnitudes = Vec::with_capacity(width * height);
-            
-            for j in 0..(width * height) {
-                let r = fft_vals[j * 2];
-                let im = fft_vals[j * 2 + 1];
-                let mag = (r * r + im * im).sqrt();
-                let log_mag = (1.0 + mag).ln();
-                magnitudes.push(log_mag);
-                if log_mag > max_mag {
-                    max_mag = log_mag;
-                }
-            }
-            
-            if max_mag == 0.0 { max_mag = 1.0; }
+            let magnitudes: Vec<f32> = fft_vals.par_chunks(2)
+                .map(|c| {
+                    let r = c[0];
+                    let im = c[1];
+                    let mag = (r * r + im * im).sqrt();
+                    (1.0 + mag).ln()
+                })
+                .collect();
+
+            let max_mag = magnitudes.par_iter().cloned().reduce(|| 0.0f32, f32::max).max(1.0);
             
             // Update Window Buffer
-            for y in 0..height {
+            buffer.par_chunks_mut(window_width).enumerate().for_each(|(y, row)| {
                 for x in 0..width {
+                    // 1. Left: Input (Grayscale)
                     let idx = y * width + x;
+                    let val = (input_floats[idx] * 255.0) as u32;
+                    let color = (val << 16) | (val << 8) | val;
+                    row[x] = color;
                     
-                    // 1. Left: RGB Temporal Split (Ghosting Effect)
-                    // We already packed it on GPU!
-                    let color_rgb = rgb_vals[idx] as u32;
-                    buffer[y * window_width + x] = color_rgb;
-                    
-                    // 2. Middle: FFT Magnitude (Shifted)
+                    // 2. Middle-Left: FFT Magnitude (Shifted)
                     let shift_y = (y + height / 2) % height;
                     let shift_x = (x + width / 2) % width;
                     let mag_idx = shift_y * width + shift_x;
@@ -218,17 +251,26 @@ fn run_realtime_camera(device: &burn::backend::wgpu::WgpuDevice) {
                     let val = ((mag / max_mag) * 255.0) as u32;
                     let color_fft = (val << 16) | (val << 8) | val;
                     
-                    buffer[y * window_width + (x + width)] = color_fft;
+                    row[x + width] = color_fft;
                     
-                    // 3. Right: Sobel Edge Detection
+                    // 3. Middle-Right: Sobel Edge Detection
                     let sobel_val = sobel_vals[idx];
                     let val = (sobel_val * 255.0).clamp(0.0, 255.0) as u32;
                     // Greenish for edges
-                    let color_sobel = (val << 8); 
+                    let color_sobel = val << 8; 
                     
-                    buffer[y * window_width + (x + width * 2)] = color_sobel;
+                    row[x + width * 2] = color_sobel;
+                    
+                    // 4. Right: Temporal Difference (Motion Energy)
+                    let temp_val = temporal_vals[idx];
+                    // Amplify motion
+                    let val = (temp_val * 5.0 * 255.0).clamp(0.0, 255.0) as u32;
+                    // Red for motion
+                    let color_temp = val << 16;
+                    
+                    row[x + width * 3] = color_temp;
                 }
-            }
+            });
             
             window.update_with_buffer(&buffer, window_width, window_height).unwrap();
             
@@ -249,7 +291,7 @@ fn run_realtime_camera(device: &burn::backend::wgpu::WgpuDevice) {
     }
 }
 
-fn run_video_generation(device: &burn::backend::wgpu::WgpuDevice) {
+fn run_video_generation<B: Backend + FftBackend + OpsBackend>(device: &B::Device) {
     eprintln!("Generating test video frames...");
     let width = 256;
     let height = 256;
@@ -267,8 +309,8 @@ fn run_video_generation(device: &burn::backend::wgpu::WgpuDevice) {
     let mut stdout = std::io::stdout();
     
     for (_i, frame_data) in video_data.iter().enumerate() {
-        // Upload to GPU
-        let tensor = Tensor::<MyBackend, 1>::from_floats(frame_data.as_slice(), device);
+        // Upload to Device
+        let tensor = Tensor::<B, 1>::from_floats(frame_data.as_slice(), device);
         let tensor_2d = tensor.reshape([height, width]);
         
         // Perform 2D FFT
@@ -392,12 +434,12 @@ fn run_fft_batch<B: Backend + FftBackend>(
     let imag_prim = imag.into_primitive();
     
     let real_t = match real_prim {
-        TensorPrimitive::Float(t) => t,
+        burn::tensor::TensorPrimitive::Float(t) => t,
         _ => panic!("Expected float tensor"),
     };
     
     let imag_t = match imag_prim {
-        TensorPrimitive::Float(t) => t,
+        burn::tensor::TensorPrimitive::Float(t) => t,
         _ => panic!("Expected float tensor"),
     };
     
@@ -405,8 +447,8 @@ fn run_fft_batch<B: Backend + FftBackend>(
     let (real_out_t, imag_out_t) = B::fft_1d_batch_impl(real_t, imag_t, n_fft);
     
     // Wrap back
-    let real_res: Tensor<B, 2> = Tensor::from_primitive(TensorPrimitive::Float(real_out_t));
-    let imag_res: Tensor<B, 2> = Tensor::from_primitive(TensorPrimitive::Float(imag_out_t));
+    let real_res: Tensor<B, 2> = Tensor::from_primitive(burn::tensor::TensorPrimitive::Float(real_out_t));
+    let imag_res: Tensor<B, 2> = Tensor::from_primitive(burn::tensor::TensorPrimitive::Float(imag_out_t));
     
     (real_res, imag_res)
 }

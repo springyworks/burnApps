@@ -1,5 +1,7 @@
-use burn::tensor::{Tensor, backend::Backend, Int};
+// use burn::tensor::{Tensor, backend::Backend, Int};
 
+// Unused functions commented out to avoid warnings
+/*
 pub fn fft_radix2<B: Backend>(input: Tensor<B, 1>) -> Tensor<B, 2> {
     let n = input.shape().dims[0];
     assert!(n.is_power_of_two(), "Input size must be power of 2");
@@ -51,3 +53,4 @@ fn fft_butterfly_stage<B: Backend>(input: Tensor<B, 2>, _stage_size: usize) -> T
     // Implement butterfly operations using tensor ops
     input // Placeholder
 }
+*/
