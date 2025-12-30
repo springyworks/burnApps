@@ -1,0 +1,31 @@
+[package]
+name = "rust-burn-fft-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+burn = { path = "../../burn/crates/burn", features = ["wgpu", "std"] }
+burn-cubecl = { path = "../../burn/crates/burn-cubecl" }
+cubecl = { git = "https://github.com/tracel-ai/cubecl", default-features = false, rev = "48ff83f19952d053b80ab5762baf387f451e5c63", features = ["wgpu"] }
+num-complex = "0.4"
+rand = "0.9"
+log = "0.4"
+nokhwa = { version = "0.10", features = ["input-v4l"] }
+minifb = "0.25"
+image = "0.25"
+
+[features]
+default = ["wgpu"]
+wgpu = ["burn/wgpu"]
+cuda = ["burn/cuda"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
