@@ -1,0 +1,24 @@
+[package]
+name = "bachmodem"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+burn = { path = "../../burn/crates/burn", features = ["cuda", "wgpu", "autodiff"] }
+burn-cuda = { path = "../../burn/crates/burn-cuda" }
+burn-wgpu = { path = "../../burn/crates/burn-wgpu" }
+burn-ndarray = { path = "../../burn/crates/burn-ndarray" }
+fft_gpu = { path = "../fft_gpu" }
+
+# WAV file generation
+hound = "3.5"
+
+# Math utilities
+num-complex = "0.4"
+
+# Random number generation
+rand = "0.8"
+
+[[bin]]
+name = "bachmodem"
+path = "src/main.rs"
