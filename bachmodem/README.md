@@ -48,6 +48,14 @@ cargo run --release --example time_slot_test
 cargo run --release --example wav_decode_test
 ```
 
+### Generate Clean Test Signal
+
+```bash
+# Generates a clean WAV with 5 repetitions, 5s gaps, and +5dB SNR
+# Useful for listening tests and verifying the "Preamble-Data-Flourish" sequence
+cargo run --release --example generate_clean_wav
+```
+
 - **Aesthetics**: Breaks up long transmissions with rapid upward arpeggios
 - **Synchronization**: Provides periodic checkpoints for receiver re-sync
 - **Channel Probing**: Sweeps all frequencies to measure fading

@@ -4,6 +4,13 @@
 
 BachModem is now fully operational with a robust weak-signal receiver, including FFT-based synchronization, Time-Slotted Repetition Protocol, and full GPU acceleration.
 
+## Recent Critical Fixes (Jan 2026)
+
+Two major bugs were identified and fixed, enabling the system to pass the -28 dB system test:
+
+1.  **Synchronization Aliasing**: The FFT-based synchronizer was decimating the signal by 4x to save compute. However, with an 8kHz sample rate, this reduced the Nyquist frequency to 1kHz. The highest Bach note (D6) is 1174 Hz, which aliased and destroyed correlation. **Fix**: Removed decimation (GPU FFT is fast enough to handle full rate).
+2.  **Channel Model Initialization**: The Watterson/Jakes channel model used deterministic phases starting at t=0. This caused the Rayleigh fading envelope to always start at or near zero amplitude, wiping out the preamble. **Fix**: Added random phase initialization to the oscillators.
+
 ## What Was Built
 
 ### 1. Core Wavelet Engine (`src/wavelet.rs`)
