@@ -152,27 +152,13 @@ pub fn synchronize_signal<B: Backend + FftBackend>(
         return None;
     }
     
-    // FFT correlation is fast enough - reduce decimation for better accuracy
-    // Lower decimation = better sync accuracy at -30 dB
-    let decim_factor = 4; // Reduced from 16 since FFT is fast
-    println!("    [Sync] Decimating by {} for FFT coarse search...", decim_factor);
+    // FFT correlation is fast enough - no need to decimate!
+    // This avoids aliasing (max freq 1174 Hz > 1000 Hz Nyquist at decimation 4)
+    let decim_factor = 1; 
+    println!("    [Sync] No decimation for full accuracy...");
     
-    let signal_data = signal.to_data();
-    let signal_slice = signal_data.as_slice::<f32>().unwrap();
-    let decimated_signal: Vec<f32> = signal_slice.iter()
-        .step_by(decim_factor)
-        .copied()
-        .collect();
-    
-    let preamble_data = preamble.to_data();
-    let preamble_slice = preamble_data.as_slice::<f32>().unwrap();
-    let decimated_preamble: Vec<f32> = preamble_slice.iter()
-        .step_by(decim_factor)
-        .copied()
-        .collect();
-    
-    let decim_signal_tensor = Tensor::from_floats(decimated_signal.as_slice(), device);
-    let decim_preamble_tensor = Tensor::from_floats(decimated_preamble.as_slice(), device);
+    let decim_signal_tensor = signal.clone();
+    let decim_preamble_tensor = preamble.clone();
     
     println!("    [Sync] Coarse correlation: {} samples vs {} preamble", 
              decim_signal_tensor.dims()[0], decim_preamble_tensor.dims()[0]);

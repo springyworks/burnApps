@@ -108,41 +108,61 @@ pub fn generate_symbol<B: Backend>(
 
 /// Generates the Bach Preamble (Fast Arpeggio Sweep)
 /// 
-/// Sweeps up and down the C-Major scale 10 times for robust synchronization
+/// Sweeps UP-UP-UP-DOWN (4 cycles, approx 3.2s).
+/// LoRa-style: 3 Up-Chirps (Preamble) + 1 Down-Chirp (Sync Word).
 pub fn generate_bach_preamble<B: Backend>(device: &B::Device) -> Tensor<B, 1> {
-    // 6 cycles for -28 dB operation: ~9 seconds preamble
-    // Balance: longer = better detection, shorter = less memory/time
-    // Each cycle = 30 notes * 0.05s = 1.5s
-    generate_bach_sweep::<B>(device, 6)
+    let note_duration = PREAMBLE_NOTE_DURATION;
+    let mut sequence = Vec::new();
+    
+    // Cycle 1: Up
+    for i in 0..16 { sequence.push(i); }
+    // Cycle 2: Up
+    for i in 0..16 { sequence.push(i); }
+    // Cycle 3: Up
+    for i in 0..16 { sequence.push(i); }
+    // Cycle 4: Down (Sync Word)
+    for i in (0..16).rev() { sequence.push(i); }
+    
+    generate_from_sequence::<B>(device, &sequence, note_duration)
 }
 
 /// Generates a shorter Bach Flourish (Fast Arpeggio)
 /// 
-/// A single up-and-down sweep for musical punctuation within the transmission
+/// A single DOWN sweep to be distinct from the Preamble (UP)
 pub fn generate_bach_flourish<B: Backend>(device: &B::Device) -> Tensor<B, 1> {
-    generate_bach_sweep::<B>(device, 2) // Just 2 cycles for brevity
+    generate_bach_sweep_down::<B>(device, 1)
 }
 
-/// Generates Bach Sweep with configurable repetitions
-fn generate_bach_sweep<B: Backend>(device: &B::Device, cycles: usize) -> Tensor<B, 1> {
+/// Generates Bach Sweep UP
+fn generate_bach_sweep_up<B: Backend>(device: &B::Device, cycles: usize) -> Tensor<B, 1> {
     let note_duration = PREAMBLE_NOTE_DURATION;
-    
-    // Build sequence: up (0-15) + down (14-1) repeated N times
     let mut sequence = Vec::new();
     for _ in 0..cycles {
-        // Up
+        // Up (0-15)
         for i in 0..16 {
             sequence.push(i);
         }
-        // Down (excluding top and bottom to avoid repeat)
-        for i in (1..15).rev() {
+    }
+    generate_from_sequence::<B>(device, &sequence, note_duration)
+}
+
+/// Generates Bach Sweep DOWN
+fn generate_bach_sweep_down<B: Backend>(device: &B::Device, cycles: usize) -> Tensor<B, 1> {
+    let note_duration = PREAMBLE_NOTE_DURATION;
+    let mut sequence = Vec::new();
+    for _ in 0..cycles {
+        // Down (15-0)
+        for i in (0..16).rev() {
             sequence.push(i);
         }
     }
-    
+    generate_from_sequence::<B>(device, &sequence, note_duration)
+}
+
+fn generate_from_sequence<B: Backend>(device: &B::Device, sequence: &[usize], note_duration: f64) -> Tensor<B, 1> {
     // Generate each note
     let mut waveforms = Vec::new();
-    for &idx in &sequence {
+    for &idx in sequence {
         let waveform = generate_symbol::<B>(device, idx, 0.0, note_duration, FS);
         waveforms.push(waveform);
     }
@@ -184,8 +204,8 @@ mod tests {
         let device = Default::default();
         let preamble = generate_bach_preamble::<TestBackend>(&device);
         
-        // Should be 10 * (16 up + 14 down) * 0.1s * 8000Hz
-        let expected_len = 10 * 30 * (PREAMBLE_NOTE_DURATION * FS) as usize;
+        // Should be 4 * 16 * 0.05s * 8000Hz
+        let expected_len = 4 * 16 * (PREAMBLE_NOTE_DURATION * FS) as usize;
         assert_eq!(preamble.dims()[0], expected_len);
         
         println!("Bach preamble generated successfully");

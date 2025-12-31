@@ -29,6 +29,17 @@ pub struct WattersonChannel {
 }
 
 impl WattersonChannel {
+    /// Create gentle HF channel (Good propagation)
+    pub fn gentle() -> Self {
+        Self {
+            num_paths: 2,
+            path_delays: vec![0, 32],   // 0ms and 4ms at 8kHz
+            path_gains: vec![0.8, 0.2], // -2 dB and -14 dB
+            doppler_spread: 0.05,       // 0.05 Hz spread (Very gentle)
+            sample_rate: 8000.0,
+        }
+    }
+    
     /// Create moderate HF channel (ITU Poor channel)
     pub fn moderate() -> Self {
         Self {
@@ -93,29 +104,50 @@ impl WattersonChannel {
         let num_oscillators = 16; // More = better approximation
         let fd = self.doppler_spread;
         
-        let mut fading = Tensor::<B, 1>::zeros([length], device);
+        // Use random phases to avoid "start at 0" issue
+        // We need two independent processes for Rayleigh (I and Q)
+        // But for amplitude modulation of real signal, one process with non-zero start is enough?
+        // Actually, let's do it properly: Envelope = sqrt(I^2 + Q^2)
         
-        // Pre-calculate time vector on GPU
         let t = Tensor::<B, 1, burn::tensor::Int>::arange(0..length as i64, device)
             .float() / self.sample_rate;
+            
+        let mut i_comp = Tensor::<B, 1>::zeros([length], device);
+        let mut q_comp = Tensor::<B, 1>::zeros([length], device);
+        
+        // We can't easily use rand inside the loop if we want to be pure, 
+        // but for simulation it's fine.
+        // We need to import rand.
+        let mut rng = rand::thread_rng();
+        use rand::Rng;
         
         for n in 0..num_oscillators {
-            // Random phase for each oscillator
-            let phase = (n as f32 / num_oscillators as f32) * 2.0 * PI;
-            
-            // Doppler frequency for this oscillator
+            // Doppler frequency
             let fn_doppler = fd * (2.0 * PI * n as f32 / num_oscillators as f32).cos();
+            let omega = 2.0 * PI * fn_doppler;
             
-            // Generate oscillation
-            let angle = t.clone() * (2.0 * PI * fn_doppler) + phase;
-            let oscillation = angle.cos() / (num_oscillators as f32).sqrt();
+            // Random phases for I and Q
+            let phase_i = rng.gen::<f32>() * 2.0 * PI;
+            let phase_q = rng.gen::<f32>() * 2.0 * PI;
             
-            fading = fading + oscillation;
+            // I component
+            let angle_i = t.clone() * omega + phase_i;
+            let osc_i = angle_i.cos();
+            i_comp = i_comp + osc_i;
+            
+            // Q component
+            let angle_q = t.clone() * omega + phase_q;
+            let osc_q = angle_q.cos();
+            q_comp = q_comp + osc_q;
         }
         
-        // Convert to Rayleigh envelope (magnitude of complex Gaussian)
-        // Simple approximation: abs(fading)
-        fading.abs()
+        // Normalize
+        let norm = (num_oscillators as f32).sqrt();
+        i_comp = i_comp / norm;
+        q_comp = q_comp / norm;
+        
+        // Envelope = sqrt(I^2 + Q^2)
+        (i_comp.powf_scalar(2.0) + q_comp.powf_scalar(2.0)).sqrt()
     }
 }
 

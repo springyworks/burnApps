@@ -64,7 +64,7 @@ impl PolarCodeBP {
         let mut r_init_data = vec![0.0f32; n];
         for i in 0..n {
             if self.frozen_mask[i] {
-                r_init_data[i] = 1000.0; // "Infinity"
+                r_init_data[i] = 1e9; // "Infinity"
             } else {
                 r_init_data[i] = 0.0;
             }

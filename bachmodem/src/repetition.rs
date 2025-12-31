@@ -38,8 +38,8 @@ impl TimeSlotConfig {
         let num_flourishes = num_symbols / flourish_interval;
         
         let data_duration = num_symbols as f64 * SYMBOL_DURATION;
-        let flourish_duration = num_flourishes as f64 * 6.0; // 6 seconds each
-        let preamble_duration = 30.0;
+        let flourish_duration = num_flourishes as f64 * 0.8; // 0.8 seconds each (16 notes * 0.05)
+        let preamble_duration = 3.2; // 3.2 seconds (4 cycles * 16 notes * 0.05)
         
         let transmission_duration = preamble_duration + data_duration + flourish_duration;
         
@@ -80,7 +80,7 @@ pub fn generate_repetition_transmission<B: Backend>(
         device,
         message,
         true,  // Add preamble
-        64,    // Flourish interval
+        32,    // Flourish interval (more frequent inter-ambles)
     );
     
     let transmission_len = single_transmission.dims()[0];
