@@ -26,12 +26,18 @@ D5 → E5 → F5 → G5 → A5 → B5 → C6 → D6 (1174.66 Hz)
 - Eliminates phase errors from frequency jumps
 
 ### 4. **Bach Preamble Synchronization**
-- Fast arpeggio sweep: up and down the scale 10 times
-- Duration: ~30 seconds
+- Fast arpeggio sweep: UP-DOWN-UP-DOWN (4 cycles)
+- Duration: 3.2 seconds
 - High processing gain: ~54 dB for synchronization
-- Note duration: 0.1 seconds per tone
+- Note duration: 0.05 seconds per tone
 
-### 5. **WAV File Output** ([wav.rs](src/wav.rs))
+### 5. **Musical Flourishes & Post-amble**
+- **Flourish**: Shifted UP-DOWN sweep (Shift 8 - Dominant)
+- **Post-amble**: Shifted UP-DOWN sweep (Shift 4 - Mediant)
+- **Function**: Re-sync checkpoints and End-of-Message markers
+- **LoRa-style**: Uses cyclic shifts to distinguish from preamble
+
+### 6. **WAV File Output** ([wav.rs](src/wav.rs))
 - Format: 8kHz, 16-bit PCM, mono
 - SSB-compatible bandwidth: 200 Hz - 2.8 kHz
 - Automatic normalization to prevent clipping

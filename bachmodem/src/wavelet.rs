@@ -108,53 +108,82 @@ pub fn generate_symbol<B: Backend>(
 
 /// Generates the Bach Preamble (Fast Arpeggio Sweep)
 /// 
-/// Sweeps UP-UP-UP-DOWN (4 cycles, approx 3.2s).
-/// LoRa-style: 3 Up-Chirps (Preamble) + 1 Down-Chirp (Sync Word).
+/// Sweeps UP-DOWN-UP-DOWN (4 cycles).
+/// Standard C-Major scale (Shift 0).
 pub fn generate_bach_preamble<B: Backend>(device: &B::Device) -> Tensor<B, 1> {
     let note_duration = PREAMBLE_NOTE_DURATION;
     let mut sequence = Vec::new();
     
-    // Cycle 1: Up
-    for i in 0..16 { sequence.push(i); }
-    // Cycle 2: Up
-    for i in 0..16 { sequence.push(i); }
-    // Cycle 3: Up
-    for i in 0..16 { sequence.push(i); }
-    // Cycle 4: Down (Sync Word)
-    for i in (0..16).rev() { sequence.push(i); }
+    // Cycle 1: Up (Shift 0)
+    sequence.extend(get_shifted_sweep_up(0));
+    // Cycle 2: Down (Shift 0)
+    sequence.extend(get_shifted_sweep_down(0));
+    // Cycle 3: Up (Shift 0)
+    sequence.extend(get_shifted_sweep_up(0));
+    // Cycle 4: Down (Shift 0)
+    sequence.extend(get_shifted_sweep_down(0));
     
     generate_from_sequence::<B>(device, &sequence, note_duration)
 }
 
-/// Generates a shorter Bach Flourish (Fast Arpeggio)
+/// Generates Bach Flourish / Inter-amble
 /// 
-/// A single DOWN sweep to be distinct from the Preamble (UP)
+/// Shifted UP-DOWN sweep (Shift 8 - Dominant/Fifth).
+/// Distinct from Preamble but musically related.
 pub fn generate_bach_flourish<B: Backend>(device: &B::Device) -> Tensor<B, 1> {
-    generate_bach_sweep_down::<B>(device, 1)
+    let note_duration = PREAMBLE_NOTE_DURATION;
+    let mut sequence = Vec::new();
+    
+    // Up (Shift 8)
+    sequence.extend(get_shifted_sweep_up(8));
+    // Down (Shift 8)
+    sequence.extend(get_shifted_sweep_down(8));
+    
+    generate_from_sequence::<B>(device, &sequence, note_duration)
 }
 
-/// Generates Bach Sweep UP
+/// Generates Bach Post-amble
+/// 
+/// Shifted UP-DOWN sweep (Shift 4 - Mediant/Third).
+/// Signals end of transmission.
+pub fn generate_bach_postamble<B: Backend>(device: &B::Device) -> Tensor<B, 1> {
+    let note_duration = PREAMBLE_NOTE_DURATION;
+    let mut sequence = Vec::new();
+    
+    // Up (Shift 4)
+    sequence.extend(get_shifted_sweep_up(4));
+    // Down (Shift 4)
+    sequence.extend(get_shifted_sweep_down(4));
+    
+    generate_from_sequence::<B>(device, &sequence, note_duration)
+}
+
+/// Helper: Get indices for a shifted UP sweep
+fn get_shifted_sweep_up(shift: usize) -> Vec<usize> {
+    (0..16).map(|i| (i + shift) % 16).collect()
+}
+
+/// Helper: Get indices for a shifted DOWN sweep
+fn get_shifted_sweep_down(shift: usize) -> Vec<usize> {
+    (0..16).rev().map(|i| (i + shift) % 16).collect()
+}
+
+/// Generates Bach Sweep UP (Legacy helper, kept for compatibility if needed)
 fn generate_bach_sweep_up<B: Backend>(device: &B::Device, cycles: usize) -> Tensor<B, 1> {
     let note_duration = PREAMBLE_NOTE_DURATION;
     let mut sequence = Vec::new();
     for _ in 0..cycles {
-        // Up (0-15)
-        for i in 0..16 {
-            sequence.push(i);
-        }
+        sequence.extend(get_shifted_sweep_up(0));
     }
     generate_from_sequence::<B>(device, &sequence, note_duration)
 }
 
-/// Generates Bach Sweep DOWN
+/// Generates Bach Sweep DOWN (Legacy helper)
 fn generate_bach_sweep_down<B: Backend>(device: &B::Device, cycles: usize) -> Tensor<B, 1> {
     let note_duration = PREAMBLE_NOTE_DURATION;
     let mut sequence = Vec::new();
     for _ in 0..cycles {
-        // Down (15-0)
-        for i in (0..16).rev() {
-            sequence.push(i);
-        }
+        sequence.extend(get_shifted_sweep_down(0));
     }
     generate_from_sequence::<B>(device, &sequence, note_duration)
 }

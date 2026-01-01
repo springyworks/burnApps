@@ -6,26 +6,26 @@ BachModem implements **Musical Flourishes** - periodic fast arpeggio sweeps (Bac
 
 ## What are Flourishes?
 
-A flourish is a **2-cycle Bach Sweep** - a rapid upward arpeggio through all 16 tones in the C-Major scale, identical to the preamble but shorter (6 seconds vs. 30 seconds).
+A flourish is a **2-cycle Shifted Bach Sweep** - a rapid upward and downward arpeggio through all 16 tones in the C-Major scale, shifted by a musical interval (Dominant/Fifth).
 
 **Musical characteristics:**
-- Duration: 6.0 seconds (2 cycles)
-- Pattern: C4 → D4 → E4 → F4 → G4 → A4 → B4 → C5 → D5 → E5 → F5 → G5 → A5 → B5 → C6 → D6 (× 2)
-- Speed: 5.33 notes/second (rapid but musically pleasing)
+- Duration: 1.6 seconds (2 cycles)
+- Pattern: Shifted Up Sweep (Shift 8) → Shifted Down Sweep (Shift 8)
+- Speed: 20 notes/second (rapid but musically pleasing)
 - Constant envelope: Unity amplitude throughout
 - Processing gain: 54 dB correlation gain for detection
 
 ## Why Use Flourishes?
 
 ### 1. Musical Beauty
-Without flourishes, the transmission consists of slow 2-second wavelet tones that gradually shift in frequency. While pleasant, this can become monotonous over long messages.
+Without flourishes, the transmission consists of slow 0.1-second wavelet tones that gradually shift in frequency. While pleasant, this can become monotonous over long messages.
 
-With flourishes every 64-128 symbols (~2-4 minutes), the transmission resembles **Bach's Preludes** with their characteristic fast arpeggio flourishes punctuating slower melodic passages.
+With flourishes every 32-64 symbols (~3-6 seconds), the transmission resembles **Bach's Preludes** with their characteristic fast arpeggio flourishes punctuating slower melodic passages.
 
 ### 2. Re-synchronization Checkpoints
 If the receiver loses synchronization during transmission (due to deep fading, interference, or timing drift), flourishes provide:
 - **Known waveform patterns** for cross-correlation
-- **54 dB processing gain** (same as preamble)
+- **Shifted pattern** distinguishes them from Preamble and Post-amble
 - **Periodic reset points** to recover sync without retransmission
 
 ### 3. Channel Probing
@@ -34,6 +34,13 @@ Each flourish sweeps through all 16 frequencies, providing real-time information
 - Doppler spread
 - Available bandwidth
 - Channel quality per frequency
+
+## Post-amble
+
+BachModem now includes a **Post-amble** to signal the end of transmission.
+- **Pattern**: Shifted Up Sweep (Shift 4) → Shifted Down Sweep (Shift 4)
+- **Duration**: 1.6 seconds
+- **Function**: Explicit "End of Message" marker
 
 ## Usage
 
@@ -46,11 +53,11 @@ use burn::backend::Wgpu;
 let device = Default::default();
 let message = b"Hello, Bach!";
 
-// Insert flourish every 64 symbols (~2 minutes)
+// Insert flourish every 64 symbols
 let signal = modulate_fhdpsk_with_flourishes::<Wgpu>(
     &device,
     message,
-    true,  // Add preamble
+    true,  // Add preamble and postamble
     64,    // Flourish interval (0 = disabled)
 );
 
@@ -59,10 +66,8 @@ write_wav(&signal, "output.wav")?;
 
 **Recommended intervals:**
 - `0`: No flourishes (simplest, longest messages)
-- `32`: Frequent (every ~1 minute, most robust)
-- `64`: Standard (every ~2 minutes, good balance)
-- `128`: Sparse (every ~4 minutes, minimal overhead)
-- `256`: Rare (every ~8 minutes, low overhead)
+- `32`: Frequent (every ~3 seconds, most robust)
+- `64`: Standard (every ~6 seconds, good balance)
 
 ### Decoding with Flourishes
 
@@ -110,7 +115,7 @@ for (i, &melody_idx) in melody_indices.iter().enumerate() {
 **Timing:**
 - Flourishes are inserted BEFORE the symbol at positions 64, 128, 192, ...
 - No flourish before symbol 0 (preamble already provides initial sync)
-- Each flourish adds 48,000 samples (6 seconds at 8 kHz)
+- Each flourish adds 12,800 samples (1.6 seconds at 8 kHz)
 
 ### Decoder Behavior
 
@@ -137,7 +142,7 @@ while pos + symbol_len <= signal_len {
 
 **Synchronization:**
 1. Find preamble via cross-correlation
-2. Skip past preamble (30 seconds)
+2. Skip past preamble (3.2 seconds)
 3. Extract symbols, skipping flourishes at known positions
 4. Perform matched filtering and differential decoding
 
@@ -147,14 +152,13 @@ while pos + symbol_len <= signal_len {
 
 For a message with `N` data symbols and flourish interval `I`:
 - Number of flourishes: `floor(N / I)`
-- Flourish overhead: `floor(N / I) × 6 seconds`
-- Relative overhead: `(floor(N / I) × 6) / (N × 2) = 3 / I`
+- Flourish overhead: `floor(N / I) × 1.6 seconds`
+- Relative overhead: `(floor(N / I) × 1.6) / (N × 0.1) = 16 / I`
 
 Examples:
-- `I = 32`: 9.4% overhead
-- `I = 64`: 4.7% overhead
-- `I = 128`: 2.3% overhead
-- `I = 256`: 1.2% overhead
+- `I = 32`: 50% overhead (High, but very robust)
+- `I = 64`: 25% overhead (Standard)
+- `I = 128`: 12.5% overhead (Low)
 
 ### Benefits
 
@@ -168,8 +172,8 @@ Examples:
 
 The flourish interval should be musically pleasing:
 - Too frequent (< 32): Feels repetitive and rushed
-- Sweet spot (64-128): Natural breathing points in the "melody"
-- Too sparse (> 256): Loses the Bach prelude character
+- Sweet spot (32-64): Natural breathing points in the "melody"
+- Too sparse (> 128): Loses the Bach prelude character
 
 ### Integration with Melody
 

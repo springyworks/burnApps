@@ -1,5 +1,5 @@
 use burn::tensor::{Tensor, backend::Backend, ElementConversion};
-use crate::wavelet::{generate_symbol, generate_bach_preamble, generate_bach_flourish, get_melody_indices, morlet_wavelet, FS, SYMBOL_DURATION, BACH_FREQUENCIES};
+use crate::wavelet::{generate_symbol, generate_bach_preamble, generate_bach_flourish, generate_bach_postamble, get_melody_indices, morlet_wavelet, FS, SYMBOL_DURATION, BACH_FREQUENCIES};
 use crate::gpu_ops::cross_correlation_gpu;
 use crate::fft_correlation::{fft_cross_correlation, FftBackend};
 use crate::gpu_math::atan2_fast_gpu;
@@ -105,12 +105,19 @@ pub fn modulate_fhdpsk_with_flourishes<B: Backend>(
     
     let data_waveform = Tensor::cat(waveforms, 0);
     
+    let mut parts = Vec::new();
+    
     if add_preamble {
-        let preamble = generate_bach_preamble::<B>(device);
-        Tensor::cat(vec![preamble, data_waveform], 0)
-    } else {
-        data_waveform
+        parts.push(generate_bach_preamble::<B>(device));
     }
+    
+    parts.push(data_waveform);
+    
+    if add_preamble {
+        parts.push(generate_bach_postamble::<B>(device));
+    }
+    
+    Tensor::cat(parts, 0)
 }
 
 /// GPU-only synchronization - returns tensors without sync
